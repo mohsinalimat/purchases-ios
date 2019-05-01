@@ -51,13 +51,14 @@
 NSString * RCAppUserDefaultsKey = @"com.revenuecat.userdefaults.appUserID";
 NSString * RCPurchaserInfoAppUserDefaultsKeyBase = @"com.revenuecat.userdefaults.purchaserInfo.";
 
-RCAttributionData * _Nullable postponedAttributionData;
+NSMutableArray<RCAttributionData *> * _Nullable postponedAttributionData;
 
 @implementation RCPurchases
 
 #pragma mark - Configuration
 static RCPurchases *_sharedPurchases = nil;
 
+@dynamic automaticAttributionCollection;
 static BOOL _automaticAttributionCollection = YES;
 
 + (void)setAutomaticAttributionCollection:(BOOL)automaticAttributionCollection
@@ -210,15 +211,16 @@ static BOOL _automaticAttributionCollection = YES;
         [self.notificationCenter addObserver:self
                                     selector:@selector(applicationDidBecomeActive:)
                                         name:APP_DID_BECOME_ACTIVE_NOTIFICATION_NAME object:nil];
-
-        if (postponedAttributionData != nil) {
-            [self addAttributionData:postponedAttributionData.data fromNetwork:postponedAttributionData.network forNetworkUserId:postponedAttributionData.networkUserId];
-            postponedAttributionData = nil;
+        
+        for (RCAttributionData * attributionData in postponedAttributionData) {
+            [self addAttributionData:attributionData.data fromNetwork:attributionData.network forNetworkUserId:attributionData.networkUserId];
         }
+        postponedAttributionData = nil;
         
         if (_automaticAttributionCollection == YES) {
-            [attributionFetcher adClientAttributionDetailsWithBlock:^(NSDictionary<NSString *,NSObject *> * _Nullable attributionDetails, NSError * _Nullable error) {
-                if (attributionDetails != nil) {
+            [attributionFetcher adClientAttributionDetailsWithBlock:^(NSDictionary<NSString *,NSObject *> * _Nullable attributionDetails, NSError * _Nullable error) {                
+                NSArray *values = [attributionDetails allValues];
+                if (values != 0 && [values objectAtIndex:0][@"iad-attribution"]) {
                     [self addAttributionData:attributionDetails fromNetwork:RCAttributionNetworkAppleSearchAds forNetworkUserId:nil];
                 }
             }];
@@ -268,11 +270,23 @@ static BOOL _automaticAttributionCollection = YES;
 
     newData[@"rc_idfa"] = [self.attributionFetcher advertisingIdentifier];
     newData[@"rc_idfv"] = [self.attributionFetcher identifierForVendor];
+    
+    switch (network) {
+        case RCAttributionNetworkAppsFlyer:
+            // only set rc_appsflyer_id if not nil to preserve legacy implementations
+            if (newData[@"rc_appsflyer_id"] == nil) {
+                newData[@"rc_appsflyer_id"] = (networkUserId != nil) ? networkUserId : self.appUserID;
+            }
+        case RCAttributionNetworkBranch:
+            newData[@"rc_branch_id"] = (networkUserId != nil) ? networkUserId : self.appUserID;
+        default:
+            break;
+    }
 
     if (newData.count > 0) {
         [self.backend postAttributionData:newData
                               fromNetwork:network
-                             forAppUserID: (networkUserId != nil) ? networkUserId : self.appUserID];
+                             forAppUserID:self.appUserID];
     }
 }
 
@@ -287,11 +301,14 @@ static BOOL _automaticAttributionCollection = YES;
           forNetworkUserId:(NSString * _Nullable)networkUserId
 {
     if ([RCPurchases sharedPurchases] != nil) {
-        RCLog(@"There is instance");
+        RCLog(@"There is an instance configured, posting attribution");
         [[RCPurchases sharedPurchases] addAttributionData:data fromNetwork:network forNetworkUserId:networkUserId];
     } else {
-        RCLog(@"There is no instance");
-        postponedAttributionData = [[RCAttributionData alloc] initWithData:data fromNetwork:network forNetworkUserId:networkUserId];
+        RCLog(@"There is no instance configured, caching attribution");
+        if (postponedAttributionData == nil) {
+            postponedAttributionData = [NSMutableArray array];
+        }
+        [postponedAttributionData addObject:[[RCAttributionData alloc] initWithData:data fromNetwork:network forNetworkUserId:networkUserId]];
     }
 }
 
